@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 from PyQt6.QtCore import Qt, QRect, QSize, QTimer
 from PyQt6.QtGui import (
@@ -52,13 +52,20 @@ class CodeEditor(QPlainTextEdit):
     QPlainTextEdit с полем номеров строк и подсветкой текущей строки.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: Optional[QWidget] = None, font_size: int = 12) -> None:
         super().__init__(parent)
         self._line_number_area = LineNumberArea(self)
         # таймер для debounce сортировки при редактировании
         self._sort_timer = QTimer(self)
         self._sort_timer.setSingleShot(True)
         self._sort_timer.timeout.connect(self._sort_lines)
+        # колбэк для сохранения размера шрифта
+        self._on_font_size_changed: Optional[Callable[[int], None]] = None
+
+        # устанавливаем размер шрифта
+        font = self.font()
+        font.setPointSize(font_size)
+        self.setFont(font)
 
         self.blockCountChanged.connect(self._update_line_number_area_width)
         self.updateRequest.connect(self._update_line_number_area)
@@ -186,6 +193,9 @@ class CodeEditor(QPlainTextEdit):
                 font.setPointSize(size)
                 self.setFont(font)
                 self._update_line_number_area_width(0)
+                # вызываем колбэк для сохранения размера шрифта
+                if self._on_font_size_changed:
+                    self._on_font_size_changed(size)
                 return
             if event.key() == Qt.Key.Key_Minus:
                 font = self.font()
@@ -193,6 +203,9 @@ class CodeEditor(QPlainTextEdit):
                 font.setPointSize(size)
                 self.setFont(font)
                 self._update_line_number_area_width(0)
+                # вызываем колбэк для сохранения размера шрифта
+                if self._on_font_size_changed:
+                    self._on_font_size_changed(size)
                 return
 
         super().keyPressEvent(event)
@@ -275,9 +288,9 @@ class EditorTab(QWidget):
     Простая вкладка-редактор на базе QPlainTextEdit.
     """
 
-    def __init__(self, initial_text: str = "", parent: Optional[QWidget] = None) -> None:
+    def __init__(self, initial_text: str = "", parent: Optional[QWidget] = None, font_size: int = 12) -> None:
         super().__init__(parent)
-        self.editor = CodeEditor(self)
+        self.editor = CodeEditor(self, font_size=font_size)
         self.editor.setPlainText(initial_text)
 
         layout = QVBoxLayout(self)
@@ -417,6 +430,7 @@ class MainWindow(QMainWindow):
 
         state = self._config.state
         titles_from_state = state.titles
+        font_size = state.font_size
 
         for i, path in enumerate(self._file_manager.files):
             text = self._file_manager.get_buffer(i)
@@ -425,7 +439,7 @@ class MainWindow(QMainWindow):
                 title = titles_from_state[i].strip()
             else:
                 title = path.name if path and path.name else "untitled"
-            self._create_editor_tab(text, title)
+            self._create_editor_tab(text, title, font_size)
 
         self._ensure_plus_tab()
 
@@ -451,7 +465,8 @@ class MainWindow(QMainWindow):
     def _on_new_file(self) -> None:
         self._sync_current_editor_to_manager()
         idx = self._file_manager.new_file()
-        index = self._create_editor_tab("", "untitled")
+        font_size = self._config.state.font_size
+        index = self._create_editor_tab("", "untitled", font_size)
         self._ensure_plus_tab()
         # текущая вкладка в менеджере и в UI должны совпадать
         self.tabs.setCurrentIndex(index)
@@ -481,7 +496,8 @@ class MainWindow(QMainWindow):
                 widget.set_text(text)
         else:
             # новый файл — создаём новую вкладку перед «+»
-            index = self._create_editor_tab(text, Path(path_str).name)
+            font_size = self._config.state.font_size
+            index = self._create_editor_tab(text, Path(path_str).name, font_size)
             self._ensure_plus_tab()
 
         self.tabs.setCurrentIndex(idx)
@@ -594,13 +610,15 @@ class MainWindow(QMainWindow):
         elif action is open_action:
             self._on_open_file_dialog()
 
-    def _create_editor_tab(self, text: str, title: str) -> int:
+    def _create_editor_tab(self, text: str, title: str, font_size: int = 12) -> int:
         """
         Создаёт вкладку-редактор, вставляя её перед вкладкой «+», если она есть.
         """
-        tab = EditorTab(initial_text=text)
+        tab = EditorTab(initial_text=text, font_size=font_size)
         # автосохранение при каждом изменении текста
         tab.editor.textChanged.connect(self._on_editor_text_changed)
+        # колбэк для сохранения размера шрифта при изменении
+        tab.editor._on_font_size_changed = lambda size: self._on_font_size_changed(size)
         plus_idx = -1
         for i in range(self.tabs.count()):
             if self._is_plus_tab(i):
@@ -666,6 +684,18 @@ class MainWindow(QMainWindow):
 
     # --- события окна ---
 
+    def _on_font_size_changed(self, font_size: int) -> None:
+        """
+        Сохраняет размер шрифта в конфиг при изменении.
+        """
+        self._sync_current_editor_to_manager()
+        titles: list[str] = []
+        for i in range(self.tabs.count()):
+            if self._is_plus_tab(i):
+                continue
+            titles.append(self.tabs.tabText(i))
+        self._file_manager.save_state(titles, font_size)
+
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         # перед закрытием — синхронизируем буферы и сохраняем список файлов и заголовков вкладок
         self._sync_current_editor_to_manager()
@@ -675,7 +705,14 @@ class MainWindow(QMainWindow):
             if self._is_plus_tab(i):
                 continue
             titles.append(self.tabs.tabText(i))
-        self._file_manager.save_state(titles)
+        # получаем текущий размер шрифта из активной вкладки
+        font_size = 12
+        idx = self.tabs.currentIndex()
+        if idx >= 0:
+            widget = self.tabs.widget(idx)
+            if isinstance(widget, EditorTab):
+                font_size = widget.editor.font().pointSize()
+        self._file_manager.save_state(titles, font_size)
         super().closeEvent(event)
 
 

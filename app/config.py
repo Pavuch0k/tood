@@ -17,6 +17,7 @@ class AppState:
     active_index: int
     titles: List[str]
     buffers: List[str]
+    font_size: int
 
 
 class ConfigManager:
@@ -25,7 +26,7 @@ class ConfigManager:
     """
 
     def __init__(self) -> None:
-        self._state = AppState(last_files=[], active_index=0, titles=[], buffers=[])
+        self._state = AppState(last_files=[], active_index=0, titles=[], buffers=[], font_size=12)
         self._load()
 
     @property
@@ -42,10 +43,11 @@ class ConfigManager:
                     active_index=int(data.get("active_index", 0)),
                     titles=data.get("titles", []),
                     buffers=data.get("buffers", []),
+                    font_size=int(data.get("font_size", 12)),
                 )
         except Exception:
             # если конфиг битый — просто игнорируем
-            self._state = AppState(last_files=[], active_index=0, titles=[], buffers=[])
+            self._state = AppState(last_files=[], active_index=0, titles=[], buffers=[], font_size=12)
 
     def save(
         self,
@@ -53,12 +55,14 @@ class ConfigManager:
         active_index: int,
         titles: List[str],
         buffers: List[str],
+        font_size: int,
     ) -> None:
         self._state = AppState(
             last_files=[str(p) for p in last_files],
             active_index=active_index,
             titles=titles,
             buffers=buffers,
+            font_size=font_size,
         )
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
         with CONFIG_FILE.open("w", encoding="utf-8") as f:

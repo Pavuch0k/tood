@@ -140,10 +140,10 @@ class FileManager:
             if 0 <= state.active_index < len(self._files):
                 self._active_index = state.active_index
 
-    def save_state(self, titles: List[str]) -> None:
+    def save_state(self, titles: List[str], font_size: int) -> None:
         """
-        Сохраняет текущее состояние файлов, активный индекс, заголовки вкладок и буферы.
+        Сохраняет текущее состояние файлов, активный индекс, заголовки вкладок, буферы и размер шрифта.
         """
-        self._config.save(self._files, self._active_index, titles, self._buffers)
+        self._config.save(self._files, self._active_index, titles, self._buffers, font_size)
 
 
