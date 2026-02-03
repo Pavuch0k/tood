@@ -1,0 +1,12 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Hyprtext
+Comment=Текстовый редактор для Hyprland
+Exec=/home/nik/tood/run_hyprtext.sh %F
+Icon=text-editor
+Terminal=false
+Categories=TextEditor;Utility;
+MimeType=text/plain;text/markdown;
+StartupNotify=true
+

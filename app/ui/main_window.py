@@ -13,6 +13,9 @@ from PyQt6.QtGui import (
     QFont,
     QColor,
     QTextCursor,
+    QIcon,
+    QPen,
+    QFontDatabase,
 )
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -25,7 +28,13 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QInputDialog,
     QTextEdit,
+    QPushButton,
+    QHBoxLayout,
+    QStyle,
+    QStyleOptionTab,
 )
+
+import markdown
 
 from ..config import ConfigManager
 from ..core.file_manager import FileManager
@@ -62,9 +71,42 @@ class CodeEditor(QPlainTextEdit):
         # колбэк для сохранения размера шрифта
         self._on_font_size_changed: Optional[Callable[[int], None]] = None
 
-        # устанавливаем размер шрифта
+        # устанавливаем размер шрифта с поддержкой эмодзи
         font = self.font()
         font.setPointSize(font_size)
+        
+        # Улучшенная поддержка эмодзи через QFontDatabase (статический класс)
+        available_families = QFontDatabase.families()
+        
+        # Список возможных эмодзи шрифтов в порядке приоритета
+        emoji_font_candidates = [
+            "Noto Color Emoji",
+            "Noto Emoji",
+            "Apple Color Emoji",
+            "Segoe UI Emoji",
+            "EmojiOne Color",
+            "Twitter Color Emoji",
+            "JoyPixels",
+        ]
+        
+        # Собираем список доступных эмодзи шрифтов
+        fallback_families = [font.family()]  # Основной шрифт
+        for emoji_font in emoji_font_candidates:
+            if emoji_font in available_families:
+                fallback_families.append(emoji_font)
+        
+        # Если нашли эмодзи шрифты, добавляем их в fallback
+        if len(fallback_families) > 1:
+            font.setFamilies(fallback_families)
+        else:
+            # Если эмодзи шрифты не найдены, пробуем использовать системный шрифт с поддержкой эмодзи
+            # Многие системы имеют встроенную поддержку эмодзи через основной шрифт
+            font_family = font.family()
+            # Пробуем установить шрифт, который может поддерживать эмодзи
+            if "DejaVu" in font_family or "Liberation" in font_family:
+                # Для DejaVu/Liberation пробуем добавить Noto как fallback
+                font.setFamilies([font_family, "Noto Color Emoji", "Noto Emoji"])
+        
         self.setFont(font)
 
         self.blockCountChanged.connect(self._update_line_number_area_width)
@@ -288,22 +330,135 @@ class EditorTab(QWidget):
     Простая вкладка-редактор на базе QPlainTextEdit.
     """
 
-    def __init__(self, initial_text: str = "", parent: Optional[QWidget] = None, font_size: int = 12) -> None:
+    def __init__(self, initial_text: str = "", parent: Optional[QWidget] = None, font_size: int = 12, is_markdown: bool = False) -> None:
         super().__init__(parent)
+        self._is_markdown = is_markdown
+        self._is_preview_mode = is_markdown  # для markdown файлов начинаем с предпросмотра
+        
         self.editor = CodeEditor(self, font_size=font_size)
         self.editor.setPlainText(initial_text)
+        
+        # Для markdown файлов добавляем предпросмотр и кнопку переключения
+        self.preview = None
+        self.toggle_button = None
+        
+        if is_markdown:
+            self.preview = QTextEdit(self)
+            self.preview.setReadOnly(True)
+            self.preview.setStyleSheet("""
+                QTextEdit {
+                    background-color: #262335;
+                    color: #E5E9F0;
+                    border: none;
+                }
+            """)
+            self._update_preview()
+            
+            self.toggle_button = QPushButton("Редактировать", self)
+            self.toggle_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #3A3756;
+                    color: #E5E9F0;
+                    border: none;
+                    padding: 4px 8px;
+                    border-radius: 4px;
+                }
+                QPushButton:hover {
+                    background-color: #4A4566;
+                }
+            """)
+            self.toggle_button.clicked.connect(self._toggle_mode)
+            
+            # Контейнер для кнопки
+            button_container = QWidget(self)
+            button_layout = QHBoxLayout(button_container)
+            button_layout.setContentsMargins(0, 0, 0, 0)
+            button_layout.addStretch()
+            button_layout.addWidget(self.toggle_button)
+            
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(button_container)
+            
+            # Добавляем оба виджета в layout, но показываем только нужный
+            # Важно: сначала добавляем editor, потом preview, чтобы они были в правильном порядке
+            layout.addWidget(self.editor)
+            layout.addWidget(self.preview)
+            
+            if self._is_preview_mode:
+                self.editor.hide()
+                self.preview.show()
+                self.preview.raise_()  # Поднимаем preview наверх
+            else:
+                self.preview.hide()
+                self.editor.show()
+                self.editor.raise_()  # Поднимаем editor наверх
+        else:
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.addWidget(self.editor)
+        
+        # Подключаем обновление предпросмотра при изменении текста
+        if is_markdown:
+            self.editor.textChanged.connect(self._on_text_changed)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(self.editor)
+    def _on_text_changed(self) -> None:
+        """Обновляет предпросмотр при изменении текста (если в режиме предпросмотра)."""
+        if self._is_preview_mode:
+            self._update_preview()
+
+    def _update_preview(self) -> None:
+        """Обновляет HTML предпросмотр из Markdown."""
+        if not self.preview:
+            return
+        md_text = self.editor.toPlainText()
+        html = markdown.markdown(md_text, extensions=['fenced_code', 'tables'])
+        # Добавляем базовые стили для предпросмотра
+        styled_html = f"""
+        <style>
+            body {{ background-color: #262335; color: #E5E9F0; font-family: sans-serif; padding: 10px; }}
+            code {{ background-color: #3A3756; padding: 2px 4px; border-radius: 3px; }}
+            pre {{ background-color: #3A3756; padding: 10px; border-radius: 5px; overflow-x: auto; }}
+            a {{ color: #8B9DC3; }}
+            h1, h2, h3, h4, h5, h6 {{ color: #E5E9F0; }}
+            blockquote {{ border-left: 3px solid #4A4566; padding-left: 10px; margin-left: 0; }}
+            table {{ border-collapse: collapse; width: 100%; }}
+            th, td {{ border: 1px solid #3A3756; padding: 8px; }}
+            th {{ background-color: #3A3756; }}
+        </style>
+        {html}
+        """
+        self.preview.setHtml(styled_html)
+
+    def _toggle_mode(self) -> None:
+        """Переключает между режимом редактирования и предпросмотра."""
+        if not self._is_markdown:
+            return
+        
+        self._is_preview_mode = not self._is_preview_mode
+        
+        if self._is_preview_mode:
+            self._update_preview()
+            self.editor.hide()
+            self.preview.show()
+            self.preview.raise_()  # Поднимаем preview наверх
+            self.toggle_button.setText("Редактировать")
+        else:
+            self.preview.hide()
+            self.editor.show()
+            self.editor.raise_()  # Поднимаем editor наверх
+            self.toggle_button.setText("Предпросмотр")
 
     def get_text(self) -> str:
         return self.editor.toPlainText()
 
     def set_text(self, text: str) -> None:
         self.editor.setPlainText(text)
-        # сортируем строки сразу после загрузки
-        self.editor._sort_lines()
+        # сортируем строки сразу после загрузки (только для не-markdown)
+        if not self._is_markdown:
+            self.editor._sort_lines()
+        elif self._is_preview_mode:
+            self._update_preview()
 
 
 class MainWindow(QMainWindow):
@@ -390,8 +545,7 @@ class MainWindow(QMainWindow):
     # --- UI ---
     def _init_ui(self) -> None:
         self.tabs = QTabWidget(self)
-        self.tabs.setTabsClosable(True)
-        self.tabs.tabCloseRequested.connect(self._on_tab_close_requested)
+        self.tabs.setTabsClosable(False)  # Убираем крестики
         self.tabs.currentChanged.connect(self._on_tab_changed)
         self.tabs.tabBarClicked.connect(self._on_tab_bar_clicked)
         self.tabs.tabBarDoubleClicked.connect(self._on_tab_bar_double_clicked)
@@ -418,10 +572,15 @@ class MainWindow(QMainWindow):
         save_as_action.setShortcut("Ctrl+Shift+S")
         save_as_action.triggered.connect(self._on_save_as)
 
+        close_tab_action = QAction("Close Tab", self)
+        close_tab_action.setShortcut("Ctrl+Q")
+        close_tab_action.triggered.connect(self._on_close_current_tab)
+
         self.addAction(new_action)
         self.addAction(open_action)
         self.addAction(save_action)
         self.addAction(save_as_action)
+        self.addAction(close_tab_action)
 
     # --- работа с табами и FileManager ---
 
@@ -439,11 +598,33 @@ class MainWindow(QMainWindow):
                 title = titles_from_state[i].strip()
             else:
                 title = path.name if path and path.name else "untitled"
-            self._create_editor_tab(text, title, font_size)
+            is_md = path and path.suffix.lower() == ".md"
+            self._create_editor_tab(text, title, font_size, is_markdown=is_md)
 
         self._ensure_plus_tab()
 
-        self.tabs.setCurrentIndex(self._file_manager.active_index)
+        # Восстанавливаем активную вкладку из конфига
+        active_index = state.active_index
+        # Проверяем, что индекс валиден (не выходит за границы и не является вкладкой "+")
+        if 0 <= active_index < self.tabs.count():
+            # Пропускаем вкладку "+" если она оказалась на позиции active_index
+            if not self._is_plus_tab(active_index):
+                self.tabs.setCurrentIndex(active_index)
+                self._file_manager._active_index = active_index
+            else:
+                # Если активная вкладка была "+", выбираем предыдущую или первую
+                if active_index > 0:
+                    self.tabs.setCurrentIndex(active_index - 1)
+                    self._file_manager._active_index = active_index - 1
+                elif self.tabs.count() > 1:
+                    # Если есть другие вкладки, выбираем первую (не "+")
+                    self.tabs.setCurrentIndex(0)
+                    self._file_manager._active_index = 0
+        else:
+            # Если индекс невалиден, выбираем первую вкладку (если есть)
+            if self.tabs.count() > 1:
+                self.tabs.setCurrentIndex(0)
+                self._file_manager._active_index = 0
 
     def _sync_current_editor_to_manager(self) -> None:
         idx = self.tabs.currentIndex()
@@ -478,7 +659,7 @@ class MainWindow(QMainWindow):
             self,
             "Open file",
             "",
-            "Text files (*.txt);;All files (*.*)",
+            "Text files (*.txt);;Markdown files (*.md);;All files (*.*)",
         )
         if not path_str:
             return
@@ -494,13 +675,20 @@ class MainWindow(QMainWindow):
             widget = self.tabs.widget(idx)
             if isinstance(widget, EditorTab):
                 widget.set_text(text)
+            # Делаем эту вкладку активной
+            self.tabs.setCurrentIndex(idx)
+            self._file_manager._active_index = idx
         else:
             # новый файл — создаём новую вкладку перед «+»
             font_size = self._config.state.font_size
-            index = self._create_editor_tab(text, Path(path_str).name, font_size)
+            path = Path(path_str)
+            is_md = path.suffix.lower() == ".md"
+            index = self._create_editor_tab(text, path.name, font_size, is_markdown=is_md)
             self._ensure_plus_tab()
+            # Делаем новую вкладку активной
+            self.tabs.setCurrentIndex(index)
+            self._file_manager._active_index = idx
 
-        self.tabs.setCurrentIndex(idx)
         self._refresh_tab_title(idx)
 
     def _on_save(self) -> None:
@@ -556,6 +744,14 @@ class MainWindow(QMainWindow):
         self.tabs.removeTab(index)
         self._ensure_plus_tab()
 
+    def _on_close_current_tab(self) -> None:
+        """
+        Закрывает текущую активную вкладку по Ctrl+Q.
+        """
+        current_index = self.tabs.currentIndex()
+        if current_index >= 0:
+            self._on_tab_close_requested(current_index)
+
     def _on_tab_changed(self, index: int) -> None:
         # при переключении вкладки обновляем активный индекс в FileManager
         if index < 0:
@@ -610,11 +806,11 @@ class MainWindow(QMainWindow):
         elif action is open_action:
             self._on_open_file_dialog()
 
-    def _create_editor_tab(self, text: str, title: str, font_size: int = 12) -> int:
+    def _create_editor_tab(self, text: str, title: str, font_size: int = 12, is_markdown: bool = False) -> int:
         """
         Создаёт вкладку-редактор, вставляя её перед вкладкой «+», если она есть.
         """
-        tab = EditorTab(initial_text=text, font_size=font_size)
+        tab = EditorTab(initial_text=text, font_size=font_size, is_markdown=is_markdown)
         # автосохранение при каждом изменении текста
         tab.editor.textChanged.connect(self._on_editor_text_changed)
         # колбэк для сохранения размера шрифта при изменении
@@ -705,13 +901,15 @@ class MainWindow(QMainWindow):
             if self._is_plus_tab(i):
                 continue
             titles.append(self.tabs.tabText(i))
-        # получаем текущий размер шрифта из активной вкладки
+        # получаем текущий размер шрифта из активной вкладки и сохраняем активный индекс
         font_size = 12
         idx = self.tabs.currentIndex()
         if idx >= 0:
             widget = self.tabs.widget(idx)
             if isinstance(widget, EditorTab):
                 font_size = widget.editor.font().pointSize()
+            # Обновляем активный индекс в file_manager перед сохранением
+            self._file_manager._active_index = idx
         self._file_manager.save_state(titles, font_size)
         super().closeEvent(event)
 

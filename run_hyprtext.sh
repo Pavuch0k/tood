@@ -8,7 +8,9 @@ if [ -d ".venv" ]; then
   source ".venv/bin/activate"
 fi
 
-exec python3 main.py
+exec python3 main.py "$@"
+
+
 
 
 
